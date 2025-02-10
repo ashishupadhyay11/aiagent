@@ -1,0 +1,79 @@
+html, body, [class*="stApp"] {
+    background-color: #e8f5e9 !important;  /* Very light green background */
+    color: #1b5e20 !important;  /* Dark green text */
+}
+
+label, h1, h2, h3, h4, h5, h6, p {
+    color: #1b5e20 !important;  /* Dark green text for labels and headings */
+}
+
+.stButton > button {
+    background-color: #1b5e20 !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+    padding: 10px 20px !important;
+    text-shadow: none !important;  /* Remove text shadow */
+    border: none !important;  /* Remove border */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
+}
+
+.stButton > button:hover {
+    background-color: #2e7d32 !important;
+    color: #ffffff !important;
+    border: none !important;
+}
+
+.stButton > button * {
+    color: #ffffff !important;
+}
+
+.stButton > button:active, .stButton > button:focus {
+    color: #ffffff !important;
+}
+
+textarea, .stTextArea textarea, .stTextInput input {
+    background-color: #f9fff0 !important;
+    color: #1b5e20 !important;
+    border: 2px solid #2e7d32 !important;
+    border-radius: 5px !important;
+    font-weight: bold !important;
+    caret-color: black !important;
+}
+
+/* Ensure Main Page Buttons are Always Dark Green */
+button {
+    background-color: #1b5e20 !important;  /* Dark Green */
+    color: #ffffff !important;
+    font-weight: bold !important;
+    border-radius: 8px !important;
+    padding: 10px 15px !important;
+    border: none !important;
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3) !important;
+    visibility: visible !important; /* Ensure button is always visible */
+}
+
+/* Make Buttons Slightly Darker on Hover */
+button:hover {
+    background-color: #145a32 !important; /* Darker Green */
+    color: #ffffff !important;
+}
+
+/* Ensure Sidebar Buttons Are Always Visible & Dark Green */
+section[data-testid="stSidebar"] button {
+    background-color: #1b5e20 !important; /* Dark Green */
+    color: #ffffff !important;
+    font-weight: bold !important;
+    border-radius: 8px !important;
+    padding: 10px 15px !important;
+    border: none !important;
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3) !important;
+    visibility: visible !important; /* Ensure button is always visible */
+    opacity: 1 !important; /* Prevent transparency issues */
+}
+
+/* Ensure Sidebar Button Darkens on Hover */
+section[data-testid="stSidebar"] button:hover {
+    background-color: #145a32 !important; /* Even Darker Green */
+    color: #ffffff !important;
+}
