@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 import time
 import re
+from openai import OpenAI
 
 FAISS_INDEX_PATH = "faiss_index.bin"
 EMBEDDINGS_PATH = "embeddings.pkl"
@@ -30,6 +31,7 @@ with st.spinner("🌱 Initializing... Please wait..."):
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "port": os.getenv("DB_PORT"),
@@ -120,10 +122,12 @@ def ask_for_clarification(nl_query):
     Query: {nl_query}
     """
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4-turbo",
-        messages=[{"role": "system", "content": "You are an expert database assistant. Always use the provided schema and relationships before asking for clarification. Only ask for details if absolutely necessary."},
-                  {"role": "user", "content": prompt}]
+    response = client.chat.completions.create(
+        model="gpt-4-turbo-preview",
+        messages=[
+            {"role": "system", "content": "You are an expert database assistant. Always use the provided schema and relationships before asking for clarification. Only ask for details if absolutely necessary."},
+            {"role": "user", "content": prompt}
+        ]
     )
 
     clarification_question = response.choices[0].message.content.strip()
@@ -148,8 +152,8 @@ def generate_sql(nl_query):
     """
 
     with st.spinner("🤖 Generating SQL query..."):
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
+        response = client.chat.completions.create(
+            model="gpt-4-turbo-preview",
             messages=[
                 {"role": "system", "content": "You are an expert SQL assistant. Always return only the SQL query."},
                 {"role": "user", "content": prompt}
@@ -185,9 +189,9 @@ def execute_sql(query):
     except mysql.connector.Error as e:
         return None, str(e)
 
-nl_query = st.text_area("Enter your natural language query:", placeholder="Give English names and IDs of 10 products with ID > 10000")
+nl_query = st.text_area("Enter your natural language query:", placeholder="Give English names and IDs of 10 products with ID > 10000", key="nl_query_input")
 
-if st.button("Generate SQL"):
+if st.button("Generate SQL", key="generate_sql_btn"):
     clarification_question = ask_for_clarification(nl_query)
     if clarification_question:
         st.session_state["clarification_question"] = clarification_question
@@ -198,8 +202,8 @@ if st.button("Generate SQL"):
 
 if st.session_state.get("awaiting_clarification"):
     st.subheader("Clarification Needed")
-    user_clarification = st.text_input(st.session_state["clarification_question"], placeholder="Type your answer here...")
-    if st.button("Submit Clarification"):
+    user_clarification = st.text_input(st.session_state["clarification_question"], placeholder="Type your answer here...", key="clarification_input")
+    if st.button("Submit Clarification", key="submit_clarification_btn"):
         st.session_state["clarifications"][nl_query] = user_clarification
         st.session_state["awaiting_clarification"] = False
         st.session_state["sql_query"] = generate_sql(nl_query)
@@ -208,10 +212,10 @@ if st.session_state.get("awaiting_clarification"):
 
 if st.session_state.get("sql_generated"):
     if st.session_state["explanation_mode"]:
-        st.text_area("Generated Context (Scrollable):", st.session_state["generated_context"], height=200)
-    st.text_area("Generated SQL Query (Editable):", st.session_state["sql_query"], height=150)
+        st.text_area("Generated Context (Scrollable):", st.session_state["generated_context"], height=200, key="context_output")
+    st.text_area("Generated SQL Query (Editable):", st.session_state["sql_query"], height=150, key="sql_output")
 
-if st.button("Execute SQL Query"):
+if st.button("Execute SQL Query", key="execute_sql_btn"):
     result, execution_error = execute_sql(st.session_state.get("sql_query", ""))
     if execution_error is None:
         st.subheader("Query Results")
