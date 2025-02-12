@@ -1,0 +1,3 @@
+pymgclient
+mysql-connector-python
+python-dotenv
