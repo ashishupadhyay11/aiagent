@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import create_engine, text
 from openai import OpenAI
+import mgclient  # For connecting to Memgraph
 
 #############################################
 # Utility Functions & Initialization
@@ -48,63 +49,69 @@ def initialize_app():
     }
 
 #############################################
-# Schema Loading & Composite Schema Construction
+# Schema Loading from GraphDB & Composite Schema Construction
 #############################################
 
-def load_database_schema():
+def load_schema_from_graphdb():
     """
-    Load CSV files:
-      - database_schema_with_context.csv: detailed column info.
-      - database_tables.csv: table-level context.
-      - database_relationships.csv: relationships.
-    Returns dataframes, basic mappings, and a composite schema.
+    Connects to Memgraph and retrieves schema details:
+      - Table nodes and their associated Column nodes.
+      - Foreign key relationships (REFERENCE edges).
+    Returns:
+      - composite_schema: a dict mapping table names to their details.
+      - table_columns: a dict mapping table names to a list of column names.
+      - foreign_keys: a list of foreign key relationship dicts.
     """
-    try:
-        df_schema = pd.read_csv("database_schema_with_context.csv")
-        df_tables = pd.read_csv("database_tables.csv")
-        df_relationships = pd.read_csv("database_relationships.csv")
-        valid_tables = df_tables["Table Name"].unique().tolist()
-        table_columns = df_schema.groupby("Table Name")["Column Name"].apply(list).to_dict()
-        composite_schema = build_composite_schema(df_schema, df_tables)
-        return df_schema, df_tables, df_relationships, valid_tables, table_columns, composite_schema
-    except Exception as e:
-        st.error(f"Error loading schema: {str(e)}")
-        return None, None, None, None, None, None
+    conn = mgclient.connect(host='localhost', port=7687)
+    cursor = conn.cursor()
 
-def build_composite_schema(df_schema, df_tables):
-    """
-    For each table, build a composite dictionary including:
-      - Table-level context from database_tables.csv.
-      - A list of column details (type, nullability, keys, etc.) from df_schema.
-    Returns a dictionary mapping table names to their composite info.
-    """
+    # Retrieve tables and their columns
+    cursor.execute("MATCH (t:Table)-[:COLUMNS]->(c:Column) RETURN t.name AS table_name, c.name AS column_name")
+    rows = cursor.fetchall()
+    table_columns = {}
     composite_schema = {}
-    table_context_map = df_tables.set_index("Table Name")["context_for_ai"].to_dict()
-    for table in df_schema["Table Name"].unique():
-        table_context = table_context_map.get(table, "")
-        cols_df = df_schema[df_schema["Table Name"] == table]
-        columns_info = []
-        for _, row in cols_df.iterrows():
-            col_info = {
-                "Column Name": row["Column Name"],
-                "Column Type": row["Column Type"],
-                "Is Nullable": row["Is Nullable"],
-                "Column Key": row["Column Key"],
-                "Extra": row["Extra"],
-                "Default_Value": row["Default_Value"],
-                "REFERENCED_TABLE_NAME": row["REFERENCED_TABLE_NAME"],
-                "REFERENCED_COLUMN_NAME": row["REFERENCED_COLUMN_NAME"],
-                "Max_Length": row["Max_Length"],
-                "NUMERIC_PRECISION": row["NUMERIC_PRECISION"],
-                "NUMERIC_SCALE": row["NUMERIC_SCALE"],
-                "Context": row["context_for_ai"]
-            }
-            columns_info.append(col_info)
+    for table_name, column_name in rows:
+        if table_name not in table_columns:
+            table_columns[table_name] = []
+        table_columns[table_name].append(column_name)
+    for table, cols in table_columns.items():
         composite_schema[table] = {
-            "table_context": table_context,
-            "columns": columns_info
+            "table_context": "",  # You can add additional context if available.
+            "columns": [{"Column Name": col} for col in cols]
         }
-    return composite_schema
+
+    # Retrieve foreign key relationships from the graph
+    cursor.execute(
+        "MATCH (child:Table)-[r:REFERENCE]->(parent:Table) "
+        "RETURN child.name AS child_table, r.ref_column AS child_column, parent.name AS parent_table, r.parent_column AS parent_column"
+    )
+    fk_rows = cursor.fetchall()
+    foreign_keys = []
+    for child_table, child_column, parent_table, parent_column in fk_rows:
+        foreign_keys.append({
+            "TABLE_NAME": child_table,
+            "COLUMN_NAME": child_column,
+            "REFERENCED_TABLE_NAME": parent_table,
+            "REFERENCED_COLUMN_NAME": parent_column
+        })
+
+    cursor.close()
+    conn.close()
+    return composite_schema, table_columns, foreign_keys
+
+def build_schema_context_df(composite_schema):
+    """
+    Build a pandas DataFrame with a 'context_for_ai' column based on the composite schema.
+    Each row represents a table with a string describing its columns (and optional context).
+    """
+    rows = []
+    for table, info in composite_schema.items():
+        columns = ", ".join([col["Column Name"] for col in info["columns"]])
+        context = f"Table: {table}. Columns: {columns}."
+        if info.get("table_context"):
+            context += f" {info['table_context']}"
+        rows.append({"table": table, "context_for_ai": context})
+    return pd.DataFrame(rows)
 
 def get_condensed_schema(composite_schema):
     """
@@ -308,16 +315,15 @@ def main():
     st.session_state.explanation_mode = st.sidebar.checkbox("Show Query Details", value=False)
     model_choice = st.sidebar.selectbox("Select Model", ["ChatGPT Turbo", "Claude 3.5 Sonnet"])
     
-    # Load schema if not already initialized
+    # Load schema from graphDB if not already initialized
     if not st.session_state.initialized:
-        with st.spinner("Loading database schema..."):
-            df_schema, df_tables, df_relationships, valid_tables, table_columns, composite_schema = load_database_schema()
-            if df_schema is None:
-                st.error("Failed to load database schema.")
-                return
+        with st.spinner("Loading database schema from graphDB..."):
+            composite_schema, table_columns, foreign_keys = load_schema_from_graphdb()
+            df_schema = build_schema_context_df(composite_schema)
+            valid_tables = list(composite_schema.keys())
             model, index = setup_faiss_index(df_schema)
             st.session_state.df_schema = df_schema
-            st.session_state.df_relationships = df_relationships.to_dict('records')
+            st.session_state.foreign_keys = foreign_keys  # Using foreign_keys as relationships
             st.session_state.valid_tables = valid_tables
             st.session_state.table_columns = table_columns
             st.session_state.composite_schema = composite_schema
@@ -350,7 +356,7 @@ def main():
                 nl_query,
                 context,
                 st.session_state.composite_schema,
-                st.session_state.df_relationships,
+                st.session_state.foreign_keys,  # Pass foreign keys as relationships
                 model_choice
             )
             valid, message = validate_columns(sql_query, st.session_state.table_columns)
@@ -364,7 +370,7 @@ def main():
                     message,
                     context,
                     st.session_state.composite_schema,
-                    st.session_state.df_relationships,
+                    st.session_state.foreign_keys,
                     model_choice
                 )
                 if not refined_query:
@@ -383,7 +389,7 @@ def main():
                     nl_query,
                     context,
                     st.session_state.composite_schema,
-                    st.session_state.df_relationships,
+                    st.session_state.foreign_keys,
                     model_choice
                 )
                 valid, message = validate_columns(sql_query, st.session_state.table_columns)
