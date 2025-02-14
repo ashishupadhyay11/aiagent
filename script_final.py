@@ -1,6 +1,9 @@
 import streamlit as st
 import openai
+<<<<<<< HEAD
 import anthropic
+=======
+>>>>>>> 857dc54 (git init)
 import faiss
 import pandas as pd
 import mysql.connector
@@ -11,7 +14,10 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 import time
 import re
+<<<<<<< HEAD
 from openai import OpenAI
+=======
+>>>>>>> 857dc54 (git init)
 
 FAISS_INDEX_PATH = "faiss_index.bin"
 EMBEDDINGS_PATH = "embeddings.pkl"
@@ -32,10 +38,13 @@ with st.spinner("🌱 Initializing... Please wait..."):
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+<<<<<<< HEAD
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+=======
+>>>>>>> 857dc54 (git init)
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "port": os.getenv("DB_PORT"),
@@ -74,6 +83,7 @@ if "sql_query" not in st.session_state:
 if "explanation_mode" not in st.session_state:
     st.session_state["explanation_mode"] = False
 
+<<<<<<< HEAD
 if "selected_model" not in st.session_state:
     st.session_state["selected_model"] = "Claude"
 
@@ -81,6 +91,11 @@ if "selected_model" not in st.session_state:
 st.sidebar.subheader("Settings")
 st.session_state["explanation_mode"] = st.sidebar.checkbox("Enable Explanation Mode", value=False)
 st.session_state["selected_model"] = st.sidebar.radio("Select AI Model", ["Claude", "GPT-4"], index=0)
+=======
+# Sidebar Explanation Mode Toggle
+st.sidebar.subheader("Settings")
+st.session_state["explanation_mode"] = st.sidebar.checkbox("Enable Explanation Mode", value=False)
+>>>>>>> 857dc54 (git init)
 
 # Load or create FAISS index
 def load_or_create_faiss_index():
@@ -109,6 +124,7 @@ def get_relevant_context(query, top_k=5):
     _, idxs = index.search(query_embedding, top_k)
     return "\n".join(df_schema.iloc[idxs[0]]['context_for_ai'].tolist())
 
+<<<<<<< HEAD
 def get_ai_response(messages, model="Claude"):
     try:
         if model == "Claude":
@@ -128,6 +144,8 @@ def get_ai_response(messages, model="Claude"):
         st.error(f"Error with {model}: {str(e)}")
         return None
 
+=======
+>>>>>>> 857dc54 (git init)
 def ask_for_clarification(nl_query):
     """Checks if clarification is needed and stores the response."""
     if nl_query in st.session_state["clarifications"]:
@@ -149,6 +167,7 @@ def ask_for_clarification(nl_query):
     Query: {nl_query}
     """
 
+<<<<<<< HEAD
     messages = [
         {"role": "system", "content": "You are an expert database assistant. Always use the provided schema and relationships before asking for clarification. Only ask for details if absolutely necessary."},
         {"role": "user", "content": prompt}
@@ -156,6 +175,16 @@ def ask_for_clarification(nl_query):
 
     clarification_question = get_ai_response(messages, st.session_state["selected_model"])
     return clarification_question if clarification_question and clarification_question != "NO_CLARIFICATION_NEEDED" else None
+=======
+    response = openai.ChatCompletion.create(
+        model="gpt-4-turbo",
+        messages=[{"role": "system", "content": "You are an expert database assistant. Always use the provided schema and relationships before asking for clarification. Only ask for details if absolutely necessary."},
+                  {"role": "user", "content": prompt}]
+    )
+
+    clarification_question = response.choices[0].message.content.strip()
+    return clarification_question if clarification_question != "NO_CLARIFICATION_NEEDED" else None
+>>>>>>> 857dc54 (git init)
 
 def generate_sql(nl_query):
     with st.spinner("🔍 Retrieving relevant database context..."):
@@ -175,6 +204,7 @@ def generate_sql(nl_query):
     🚀 **Generate a MySQL query.**
     """
 
+<<<<<<< HEAD
     with st.spinner(f"🤖 Generating SQL query using {st.session_state['selected_model']}..."):
         messages = [
             {"role": "system", "content": "You are an expert SQL assistant. Always return only the SQL query."},
@@ -187,6 +217,21 @@ def generate_sql(nl_query):
         st.session_state["generated_context"] = context
         return sql_query
     return None
+=======
+    with st.spinner("🤖 Generating SQL query..."):
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
+            messages=[
+                {"role": "system", "content": "You are an expert SQL assistant. Always return only the SQL query."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+    sql_query = re.sub(r'```sql|```', '', response.choices[0].message.content.strip())
+
+    st.session_state["generated_context"] = context
+    return sql_query
+>>>>>>> 857dc54 (git init)
 
 def execute_sql(query):
     try:
