@@ -125,20 +125,35 @@ def setup_faiss_index(df_schema):
     model = SentenceTransformer("all-MiniLM-L6-v2")
     texts = []
     for _, row in df_schema.iterrows():
-        key_info = str(row['Key']) if pd.notna(row['Key']) else ''
-        default_value = str(row['Default Value']) if pd.notna(row['Default Value']) else ''
-        extra_info = str(row['Extra']) if pd.notna(row['Extra']) else ''
-        comment = str(row['Comment']) if pd.notna(row['Comment']) else ''
+        # Create a natural language description of the column
+        key_info = row['Key'] if pd.notna(row['Key']) else None
+        default_value = row['Default Value'] if pd.notna(row['Default Value']) else None
+        extra_info = row['Extra'] if pd.notna(row['Extra']) else None
+        comment = row['Comment'] if pd.notna(row['Comment']) else None
         
-        context = f"""
-        The {row['Column Name']} column in the {row['Table Name']} table is a {row['Data Type']} field
-        {' that cannot be null' if row['Null Allowed'] == 'NO' else ' that allows null values'}.
-        {' It is a ' + key_info + ' key' if key_info else ''}.
-        {' It has a default value of ' + default_value if default_value else ''}.
-        {' Additional info: ' + extra_info if extra_info else ''}.
-        Description: {comment}
-        """
-        texts.append(context)
+        description = f"""In the {row['Table Name']} table, there is a column named {row['Column Name']} which stores {row['Data Type']} data. 
+        This column {' cannot be null' if row['Null Allowed'] == 'NO' else 'allows null values'}."""
+        
+        if key_info:
+            if key_info == 'PRI':
+                description += f" It serves as the primary key for the table."
+            elif key_info == 'MUL':
+                description += f" It is part of an index or foreign key relationship."
+            elif key_info == 'UNI':
+                description += f" It has a unique constraint, meaning each value must be unique."
+            else:
+                description += f" It has a {key_info} key type."
+        
+        if default_value is not None:
+            description += f" If no value is specified, it defaults to {default_value}."
+        
+        if extra_info:
+            description += f" Additional properties: {extra_info}."
+        
+        if comment:
+            description += f" Purpose: {comment}"
+        
+        texts.append(description)
     
     embeddings = model.encode(texts)
     d = embeddings.shape[1]
@@ -161,22 +176,36 @@ def get_relevant_context(query, model, index, df_schema, top_k=5):
     contexts = []
     for idx in idxs[0]:
         row = df_schema.iloc[idx]
-        key_info = str(row['Key']) if pd.notna(row['Key']) else ''
-        default_value = str(row['Default Value']) if pd.notna(row['Default Value']) else ''
-        extra_info = str(row['Extra']) if pd.notna(row['Extra']) else ''
-        comment = str(row['Comment']) if pd.notna(row['Comment']) else ''
+        key_info = row['Key'] if pd.notna(row['Key']) else None
+        default_value = row['Default Value'] if pd.notna(row['Default Value']) else None
+        extra_info = row['Extra'] if pd.notna(row['Extra']) else None
+        comment = row['Comment'] if pd.notna(row['Comment']) else None
         
-        full_context = f"""
-        The {row['Column Name']} column in the {row['Table Name']} table is a {row['Data Type']} field
-        {' that cannot be null' if row['Null Allowed'] == 'NO' else ' that allows null values'}.
-        {' It is a ' + key_info + ' key' if key_info else ''}.
-        {' It has a default value of ' + default_value if default_value else ''}.
-        {' Additional info: ' + extra_info if extra_info else ''}.
-        Description: {comment}
-        """
-        contexts.append(full_context)
+        description = f"""In the {row['Table Name']} table, there is a column named {row['Column Name']} which stores {row['Data Type']} data. 
+        This column {' cannot be null' if row['Null Allowed'] == 'NO' else 'allows null values'}."""
+        
+        if key_info:
+            if key_info == 'PRI':
+                description += f" It serves as the primary key for the table."
+            elif key_info == 'MUL':
+                description += f" It is part of an index or foreign key relationship."
+            elif key_info == 'UNI':
+                description += f" It has a unique constraint, meaning each value must be unique."
+            else:
+                description += f" It has a {key_info} key type."
+        
+        if default_value is not None:
+            description += f" If no value is specified, it defaults to {default_value}."
+        
+        if extra_info:
+            description += f" Additional properties: {extra_info}."
+        
+        if comment:
+            description += f" Purpose: {comment}"
+        
+        contexts.append(description)
     
-    return "\n".join(str(context) for context in contexts if context is not None)
+    return "\n\n".join(str(context) for context in contexts if context is not None)
 
 #############################################
 # SQL Generation, Validation, and Feedback
