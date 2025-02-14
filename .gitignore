@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 .env
 .env.backup
 *.env
@@ -8,6 +9,9 @@ __pycache__/
 vector_db/
 *.pkl
 *.bin
+=======
+.env.env # Ensure .env is ignored
+>>>>>>> 857dc54 (git init)
 =======
 .env.env # Ensure .env is ignored
 >>>>>>> 857dc54 (git init)

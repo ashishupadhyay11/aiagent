@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 Source Table,Source Column,Target Table,Target Column,UPDATE_RULE,DELETE_RULE,Is_Required
 additional_lots_found,task_type_spot_check_id,task_type_spot_check,task_type_spot_check_id,RESTRICT,RESTRICT,NO
 ai_alternatives,ai_recipe_id,ai_recipes,ai_recipe_id,NO ACTION,NO ACTION,NO
@@ -402,6 +403,8 @@ ww_steps,user_id,users,user_id,RESTRICT,RESTRICT,YES
 ww_vehicles,ww_territory_id,ww_territories,id,RESTRICT,RESTRICT,NO
 ww_vehicles,reserved_for_droppoint_id,droppoints,droppoint_id,NO ACTION,NO ACTION,YES
 =======
+=======
+>>>>>>> 857dc54 (git init)
 Source Table,Source Column,Target Table,Target Column
 additional_lots_found,task_type_spot_check_id,task_type_spot_check,task_type_spot_check_id
 ai_alternatives,ai_recipe_id,ai_recipes,ai_recipe_id
@@ -804,4 +807,7 @@ ww_steps,user_id,users,user_id
 ww_steps,depot_id,ww_depots,depot_id
 ww_vehicles,reserved_for_droppoint_id,droppoints,droppoint_id
 ww_vehicles,ww_territory_id,ww_territories,id
+<<<<<<< HEAD
+>>>>>>> 857dc54 (git init)
+=======
 >>>>>>> 857dc54 (git init)
