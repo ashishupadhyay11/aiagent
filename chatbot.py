@@ -222,12 +222,50 @@ def extract_sql(query_text):
         cleaned = cleaned[3:].strip()
     return cleaned
 
+def load_instruction_rules():
+    """Load business rules and instructions from CSV."""
+    try:
+        df_rules = pd.read_csv("instruction_rules.csv")
+        # Group rules by context
+        rules_by_context = df_rules.groupby("Context").apply(
+            lambda x: x[["Rule", "Description"]].to_dict("records")
+        ).to_dict()
+        return rules_by_context
+    except Exception as e:
+        st.error(f"Error loading instruction rules: {str(e)}")
+        return {}
+
+def get_relevant_rules(nl_query, context):
+    """
+    Determine which rules are relevant based on the query and context.
+    Returns a list of relevant rule descriptions.
+    """
+    rules = []
+    # Load rules if not in session state
+    if 'instruction_rules' not in st.session_state:
+        st.session_state.instruction_rules = load_instruction_rules()
+    
+    # Check each context for relevance
+    for context_type, context_rules in st.session_state.instruction_rules.items():
+        # If the context type or related terms are in the query or context
+        if (context_type.lower() in nl_query.lower() or 
+            context_type.lower() in context.lower()):
+            # Add all rules for this context
+            rules.extend([rule["Description"] for rule in context_rules])
+    
+    return rules
+
 def generate_sql_query(nl_query, context, composite_schema, relationships, model_choice, max_tokens=400):
     """
     Generate a SQL query using the LLM.
     Uses a condensed schema to keep the prompt size within limits.
     """
     condensed_schema = get_condensed_schema(composite_schema)
+    
+    # Get relevant business rules
+    relevant_rules = get_relevant_rules(nl_query, context)
+    business_rules = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(relevant_rules)])
+    
     prompt = f"""Convert the following natural language query into a valid MySQL SQL query using only the provided schema.
 
 Available Schema (condensed):
@@ -239,14 +277,17 @@ Relationships:
 Context:
 {context}
 
+IMPORTANT BUSINESS RULES:
+{business_rules}
+
 Query: {nl_query}
 
-IMPORTANT RULES:
-1. Always qualify column names with their table names (e.g., table_name.column_name).
-2. Only use columns that exist in the provided schema.
-3. Do not invent new column names.
-4. Ensure proper joins based on the relationships.
-5. For subqueries, ensure column references are valid.
+IMPORTANT TECHNICAL RULES:
+1. Always qualify column names with their table names (e.g., table_name.column_name)
+2. Only use columns that exist in the provided schema
+3. Do not invent new column names
+4. Ensure proper joins based on the relationships
+5. For subqueries, ensure column references are valid
 
 Return ONLY the SQL query with no markdown formatting or commentary.
 """
@@ -378,6 +419,7 @@ def main():
             st.session_state.composite_schema = composite_schema
             st.session_state.model = model
             st.session_state.index = index
+            st.session_state.instruction_rules = load_instruction_rules()
             st.session_state.initialized = True
     
     # Query history dropdown
