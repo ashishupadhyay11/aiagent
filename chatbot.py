@@ -54,54 +54,43 @@ def initialize_app():
 def load_database_schema():
     """
     Load CSV files:
-      - database_schema_with_context.csv: detailed column info.
-      - database_tables.csv: table-level context.
-      - database_relationships.csv: relationships.
+      - mysql_metadata.csv: detailed column info
+      - filtered_relationships.csv: relationships
     Returns dataframes, basic mappings, and a composite schema.
     """
     try:
-        df_schema = pd.read_csv("database_schema_with_context.csv")
-        df_tables = pd.read_csv("database_tables.csv")
-        df_relationships = pd.read_csv("database_relationships.csv")
-        valid_tables = df_tables["Table Name"].unique().tolist()
+        df_schema = pd.read_csv("mysql_metadata.csv")
+        df_relationships = pd.read_csv("filtered_relationships.csv")
+        valid_tables = df_schema["Table Name"].unique().tolist()
         table_columns = df_schema.groupby("Table Name")["Column Name"].apply(list).to_dict()
-        composite_schema = build_composite_schema(df_schema, df_tables)
-        return df_schema, df_tables, df_relationships, valid_tables, table_columns, composite_schema
+        composite_schema = build_composite_schema(df_schema)
+        return df_schema, None, df_relationships, valid_tables, table_columns, composite_schema
     except Exception as e:
         st.error(f"Error loading schema: {str(e)}")
         return None, None, None, None, None, None
 
-def build_composite_schema(df_schema, df_tables):
+def build_composite_schema(df_schema):
     """
     For each table, build a composite dictionary including:
-      - Table-level context from database_tables.csv.
-      - A list of column details (type, nullability, keys, etc.) from df_schema.
+      - A list of column details from df_schema.
     Returns a dictionary mapping table names to their composite info.
     """
     composite_schema = {}
-    table_context_map = df_tables.set_index("Table Name")["context_for_ai"].to_dict()
     for table in df_schema["Table Name"].unique():
-        table_context = table_context_map.get(table, "")
         cols_df = df_schema[df_schema["Table Name"] == table]
         columns_info = []
         for _, row in cols_df.iterrows():
             col_info = {
                 "Column Name": row["Column Name"],
-                "Column Type": row["Column Type"],
-                "Is Nullable": row["Is Nullable"],
-                "Column Key": row["Column Key"],
+                "Data Type": row["Data Type"],
+                "Null Allowed": row["Null Allowed"],
+                "Key": row["Key"],
+                "Default Value": row["Default Value"],
                 "Extra": row["Extra"],
-                "Default_Value": row["Default_Value"],
-                "REFERENCED_TABLE_NAME": row["REFERENCED_TABLE_NAME"],
-                "REFERENCED_COLUMN_NAME": row["REFERENCED_COLUMN_NAME"],
-                "Max_Length": row["Max_Length"],
-                "NUMERIC_PRECISION": row["NUMERIC_PRECISION"],
-                "NUMERIC_SCALE": row["NUMERIC_SCALE"],
-                "Context": row["context_for_ai"]
+                "Comment": row["Comment"]
             }
             columns_info.append(col_info)
         composite_schema[table] = {
-            "table_context": table_context,
             "columns": columns_info
         }
     return composite_schema
@@ -109,12 +98,11 @@ def build_composite_schema(df_schema, df_tables):
 def get_condensed_schema(composite_schema):
     """
     Create a condensed version of the composite schema that includes for each table:
-      - Its context and list of column names.
+      - List of column names.
     """
     condensed = {}
     for table, info in composite_schema.items():
         condensed[table] = {
-            "table_context": info.get("table_context", ""),
             "columns": [col_info["Column Name"] for col_info in info["columns"]]
         }
     return condensed
@@ -124,32 +112,44 @@ def get_condensed_schema(composite_schema):
 #############################################
 
 def setup_faiss_index(df_schema):
-    """Initialize or load FAISS index using the 'context_for_ai' from df_schema."""
+    """Initialize or load FAISS index using the schema metadata and comments."""
     FAISS_INDEX_PATH = "faiss_index.bin"
     EMBEDDINGS_PATH = "embeddings.pkl"
+    
+    # Delete existing index files if they exist
+    if os.path.exists(FAISS_INDEX_PATH):
+        os.remove(FAISS_INDEX_PATH)
+    if os.path.exists(EMBEDDINGS_PATH):
+        os.remove(EMBEDDINGS_PATH)
+    
     model = SentenceTransformer("all-MiniLM-L6-v2")
-    if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(EMBEDDINGS_PATH):
-        with open(EMBEDDINGS_PATH, "rb") as f:
-            embeddings = pickle.load(f)
-        index = faiss.read_index(FAISS_INDEX_PATH)
-    else:
-        texts = []
-        for _, row in df_schema.iterrows():
-            context = f"""
-            The {row['Column Name']} column in the {row['Table Name']} table is a {row['Column Type']} field
-            {' that cannot be null' if not row['Is Nullable'] else ' that allows null values'}.
-            {' It is a primary key' if row['Column Key'] == 'PRI' else ''}.
-            {' It has a maximum length of ' + str(row['Max_Length']) if row['Max_Length'] else ''}.
-            {row['context_for_ai']}
-            """
-            texts.append(context)
-        embeddings = model.encode(texts)
-        d = embeddings.shape[1]
-        index = faiss.IndexFlatL2(d)
-        index.add(embeddings)
-        faiss.write_index(index, FAISS_INDEX_PATH)
-        with open(EMBEDDINGS_PATH, "wb") as f:
-            pickle.dump(embeddings, f)
+    texts = []
+    for _, row in df_schema.iterrows():
+        key_info = str(row['Key']) if pd.notna(row['Key']) else ''
+        default_value = str(row['Default Value']) if pd.notna(row['Default Value']) else ''
+        extra_info = str(row['Extra']) if pd.notna(row['Extra']) else ''
+        comment = str(row['Comment']) if pd.notna(row['Comment']) else ''
+        
+        context = f"""
+        The {row['Column Name']} column in the {row['Table Name']} table is a {row['Data Type']} field
+        {' that cannot be null' if row['Null Allowed'] == 'NO' else ' that allows null values'}.
+        {' It is a ' + key_info + ' key' if key_info else ''}.
+        {' It has a default value of ' + default_value if default_value else ''}.
+        {' Additional info: ' + extra_info if extra_info else ''}.
+        Description: {comment}
+        """
+        texts.append(context)
+    
+    embeddings = model.encode(texts)
+    d = embeddings.shape[1]
+    index = faiss.IndexFlatL2(d)
+    index.add(embeddings)
+    
+    # Save the new index and embeddings
+    faiss.write_index(index, FAISS_INDEX_PATH)
+    with open(EMBEDDINGS_PATH, "wb") as f:
+        pickle.dump(embeddings, f)
+    
     return model, index
 
 def get_relevant_context(query, model, index, df_schema, top_k=5):
@@ -161,12 +161,18 @@ def get_relevant_context(query, model, index, df_schema, top_k=5):
     contexts = []
     for idx in idxs[0]:
         row = df_schema.iloc[idx]
+        key_info = str(row['Key']) if pd.notna(row['Key']) else ''
+        default_value = str(row['Default Value']) if pd.notna(row['Default Value']) else ''
+        extra_info = str(row['Extra']) if pd.notna(row['Extra']) else ''
+        comment = str(row['Comment']) if pd.notna(row['Comment']) else ''
+        
         full_context = f"""
-        The {row['Column Name']} column in the {row['Table Name']} table is a {row['Column Type']} field
-        {' that cannot be null' if not row['Is Nullable'] else ' that allows null values'}.
-        {' It is a primary key' if row['Column Key'] == 'PRI' else ''}.
-        {' It has a maximum length of ' + str(row['Max_Length']) if row['Max_Length'] else ''}.
-        {row['context_for_ai']}
+        The {row['Column Name']} column in the {row['Table Name']} table is a {row['Data Type']} field
+        {' that cannot be null' if row['Null Allowed'] == 'NO' else ' that allows null values'}.
+        {' It is a ' + key_info + ' key' if key_info else ''}.
+        {' It has a default value of ' + default_value if default_value else ''}.
+        {' Additional info: ' + extra_info if extra_info else ''}.
+        Description: {comment}
         """
         contexts.append(full_context)
     
@@ -331,7 +337,7 @@ def main():
     # Load schema if not already initialized
     if not st.session_state.initialized:
         with st.spinner("Loading database schema..."):
-            df_schema, df_tables, df_relationships, valid_tables, table_columns, composite_schema = load_database_schema()
+            df_schema, _, df_relationships, valid_tables, table_columns, composite_schema = load_database_schema()
             if df_schema is None:
                 st.error("Failed to load database schema.")
                 return
