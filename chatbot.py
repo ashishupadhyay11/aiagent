@@ -10,6 +10,7 @@ import anthropic
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import create_engine, text
+from openai import OpenAI
 
 #############################################
 # Utility Functions & Initialization
@@ -25,10 +26,8 @@ def load_css(file_name="styles.css"):
         st.warning("No CSS file found.")
 
 def initialize_app():
-    """Load environment variables, set API keys, and initialize session state."""
+    """Load environment variables and initialize session state."""
     load_dotenv()
-    # Explicitly set OpenAI API key
-    openai.api_key = os.getenv("OPENAI_API_KEY")
     if 'initialized' not in st.session_state:
         st.session_state.initialized = False
         st.session_state.sql_query = ""
@@ -40,7 +39,6 @@ def initialize_app():
         st.session_state.nl_query = ""
         st.session_state.retry_count = 0  # For tracking refinement iterations
         st.session_state.context_top_k = 5  # initial top_k for similarity search
-        st.session_state.chat_history = []  # to store conversation messages
     return {
         "host": os.getenv("DB_HOST"),
         "port": os.getenv("DB_PORT"),
@@ -111,26 +109,15 @@ def build_composite_schema(df_schema, df_tables):
 def get_condensed_schema(composite_schema):
     """
     Create a condensed version of the composite schema that includes for each table:
-      - Its context and list of column names (converted to strings).
+      - Its context and list of column names.
     """
     condensed = {}
     for table, info in composite_schema.items():
         condensed[table] = {
-            "table_context": str(info.get("table_context", "")),
-            "columns": [str(col_info["Column Name"]) for col_info in info["columns"]]
+            "table_context": info.get("table_context", ""),
+            "columns": [col_info["Column Name"] for col_info in info["columns"]]
         }
     return condensed
-
-#############################################
-# Chat History Utilities
-#############################################
-
-def format_chat_history(chat_history):
-    """Format the chat history (a list of messages) into a single string."""
-    chat_text = ""
-    for msg in chat_history:
-        chat_text += f"{msg['role'].capitalize()}: {msg['content']}\n"
-    return chat_text
 
 #############################################
 # FAISS Index & Context Retrieval
@@ -146,7 +133,16 @@ def setup_faiss_index(df_schema):
             embeddings = pickle.load(f)
         index = faiss.read_index(FAISS_INDEX_PATH)
     else:
-        texts = df_schema["context_for_ai"].fillna("").tolist()
+        texts = []
+        for _, row in df_schema.iterrows():
+            context = f"""
+            The {row['Column Name']} column in the {row['Table Name']} table is a {row['Column Type']} field
+            {' that cannot be null' if not row['Is Nullable'] else ' that allows null values'}.
+            {' It is a primary key' if row['Column Key'] == 'PRI' else ''}.
+            {' It has a maximum length of ' + str(row['Max_Length']) if row['Max_Length'] else ''}.
+            {row['context_for_ai']}
+            """
+            texts.append(context)
         embeddings = model.encode(texts)
         d = embeddings.shape[1]
         index = faiss.IndexFlatL2(d)
@@ -157,12 +153,23 @@ def setup_faiss_index(df_schema):
     return model, index
 
 def get_relevant_context(query, model, index, df_schema, top_k=5):
-    """Retrieve relevant context from FAISS based on the query.
-       Converts every retrieved item to a string before joining.
-    """
+    """Retrieve relevant context from FAISS based on the query."""
     query_embedding = model.encode([query])
     _, idxs = index.search(query_embedding, top_k)
-    contexts = df_schema.iloc[idxs[0]]["context_for_ai"].tolist()
+    
+    # Build the same full context that was vectorized
+    contexts = []
+    for idx in idxs[0]:
+        row = df_schema.iloc[idx]
+        full_context = f"""
+        The {row['Column Name']} column in the {row['Table Name']} table is a {row['Column Type']} field
+        {' that cannot be null' if not row['Is Nullable'] else ' that allows null values'}.
+        {' It is a primary key' if row['Column Key'] == 'PRI' else ''}.
+        {' It has a maximum length of ' + str(row['Max_Length']) if row['Max_Length'] else ''}.
+        {row['context_for_ai']}
+        """
+        contexts.append(full_context)
+    
     return "\n".join(str(context) for context in contexts if context is not None)
 
 #############################################
@@ -171,10 +178,9 @@ def get_relevant_context(query, model, index, df_schema, top_k=5):
 
 def extract_sql(query_text):
     """
-    Convert input to string, then remove markdown code blocks, backticks, and any leading "sql" text.
+    Remove markdown code blocks, backticks, and any leading "sql" text.
     Returns a clean SQL query string.
     """
-    query_text = str(query_text)
     cleaned = re.sub(r'```(?:sql)?', '', query_text, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r'```', '', cleaned).strip()
     if cleaned.lower().startswith("sql"):
@@ -211,8 +217,9 @@ Return ONLY the SQL query with no markdown formatting or commentary.
 """
     try:
         if model_choice == "ChatGPT Turbo":
-            response = openai.ChatCompletion.create(
-                model="gpt-4-turbo",
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            response = client.chat.completions.create(
+                model="gpt-4-turbo-preview",
                 messages=[
                     {"role": "system", "content": "You are an expert SQL generator. Return only valid MySQL queries using the provided schema."},
                     {"role": "user", "content": prompt}
@@ -221,27 +228,23 @@ Return ONLY the SQL query with no markdown formatting or commentary.
             )
             sql_query = response.choices[0].message.content.strip()
         else:
-            anthro_client = anthropic.Client(api_key=os.getenv("CLAUDE_API_KEY"))
+            anthro_client = anthropic.Anthropic(api_key=os.getenv("CLAUDE_API_KEY"))
             response = anthro_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-3-opus-20240229",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens
             )
-            sql_query = response.completion.strip()
+            sql_query = response.content[0].text.strip()
         return extract_sql(sql_query)
     except Exception as e:
         st.error(f"Error generating SQL: {str(e)}")
         return None
 
-def refine_sql_query(previous_query, error_message, context, composite_schema, relationships, model_choice, chat_history=None, max_tokens=400):
+def refine_sql_query(previous_query, error_message, context, composite_schema, relationships, model_choice, max_tokens=400):
     """
     Refine the SQL query based on error feedback.
-    Optionally include the conversation (chat history) for context.
     """
     condensed_schema = get_condensed_schema(composite_schema)
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nChat History:\n" + format_chat_history(chat_history)
     prompt = f"""The previously generated SQL query:
 {previous_query}
 
@@ -256,7 +259,6 @@ Relationships:
 
 Context:
 {context}
-{chat_context}
 
 Please refine and correct the SQL query. Return ONLY the corrected SQL query with no additional commentary.
 """
@@ -286,37 +288,14 @@ Please refine and correct the SQL query. Return ONLY the corrected SQL query wit
 
 def validate_columns(sql_query, table_columns):
     """
-    Ensure that all table.column references in the SQL query exist in the schema,
-    taking into account possible table aliases.
+    Ensure that all table.column references in the SQL query exist in the schema.
     """
-    import re
-    alias_to_table = {}
-
-    # Capture alias definitions in FROM and JOIN clauses.
-    # This regex matches patterns like:
-    #   FROM products p
-    #   FROM products AS p
-    #   JOIN orders o
-    alias_pattern = r'(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)(?:\s+(?:AS\s+)?([a-zA-Z_][a-zA-Z0-9_]*))?'
-    for match in re.finditer(alias_pattern, sql_query, flags=re.IGNORECASE):
-        actual_table = match.group(1)
-        alias = match.group(2)
-        if alias:
-            alias_to_table[alias] = actual_table
-        else:
-            # If no alias is provided, use the table name itself.
-            alias_to_table[actual_table] = actual_table
-
-    # Regex to extract table/alias and column references.
-    col_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)'
-    refs = re.findall(col_pattern, sql_query)
-    for table_or_alias, col in refs:
-        # Map alias to actual table name if possible.
-        table_name = alias_to_table.get(table_or_alias, table_or_alias)
-        if table_name not in table_columns or col not in table_columns[table_name]:
-            return False, f"Invalid column reference: {table_or_alias}.{col}"
+    pattern = r'([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)'
+    refs = re.findall(pattern, sql_query)
+    for table, col in refs:
+        if table not in table_columns or col not in table_columns[table]:
+            return False, f"Invalid column reference: {table}.{col}"
     return True, "Valid query"
-
 
 #############################################
 # SQL Query Execution
@@ -338,59 +317,9 @@ def execute_query(sql_query, db_config):
 #############################################
 # Main Application Interface
 #############################################
-def generate_clarification_question(previous_query, error_message, context, composite_schema, relationships, model_choice, chat_history=None, max_tokens=200):
-    """
-    Generate a clarifying question for the human user after failed SQL validation.
-    """
-    condensed_schema = get_condensed_schema(composite_schema)
-    chat_context = ""
-    if chat_history:
-        chat_context = "\nChat History:\n" + format_chat_history(chat_history)
-        prompt = f"""The SQL query generated for your natural language query:
-        {previous_query}
-
-        failed with the following error:
-        {error_message}
-
-        Using the schema and relationships provided below:
-        Available Schema (condensed):
-        {json.dumps(condensed_schema, indent=2)}
-
-        Relationships:
-        {json.dumps(relationships, indent=2)}
-
-        Context:
-        {context}
-        {chat_context}
-
-    Please ask a clarifying question to the user that would help refine this SQL query. Return only the clarifying question.
-    """
-    try:
-        if model_choice == "ChatGPT Turbo":
-            response = openai.ChatCompletion.create(
-                model="gpt-4-turbo",
-                messages=[
-                    {"role": "system", "content": "You are an expert SQL generator."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=max_tokens
-            )
-            clarifying_question = response.choices[0].message.content.strip()
-        else:
-            anthro_client = anthropic.Client(api_key=os.getenv("CLAUDE_API_KEY"))
-            response = anthro_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens
-            )
-            clarifying_question = response.completion.strip()
-        return clarifying_question
-    except Exception as e:
-        st.error(f"Error generating clarification question: {str(e)}")
-        return "Please provide additional clarification to generate a correct SQL query."
 
 def main():
-    st.title("🌱 Natural Language to SQL Query Interface with Clarification Loop")
+    st.title("🌱 Natural Language to SQL Query Interface with Feedback Loop")
     load_css()
     db_config = initialize_app()
     
@@ -448,7 +377,6 @@ def main():
             retry_count = 0
             max_retries = 3
             
-            # Initial refinement loop if validation fails.
             while not valid and retry_count < max_retries:
                 st.warning(f"Validation failed: {message}. Refining the query (Attempt {retry_count+1} of {max_retries})")
                 refined_query = refine_sql_query(
@@ -457,8 +385,7 @@ def main():
                     context,
                     st.session_state.composite_schema,
                     st.session_state.df_relationships,
-                    model_choice,
-                    chat_history=st.session_state.chat_history
+                    model_choice
                 )
                 if not refined_query:
                     break
@@ -466,50 +393,31 @@ def main():
                 valid, message = validate_columns(sql_query, st.session_state.table_columns)
                 retry_count += 1
             
-            # If still invalid after retries, ask user for clarification.
             if not valid:
-                clarifying_question = generate_clarification_question(
-                    sql_query,
-                    message,
+                st.error(f"SQL query could not be refined after {max_retries} attempts: {message}.")
+                # Optionally, re-run similarity search with increased context (top_k)
+                st.warning("Refinement attempts failed. Re-running similarity search with more context...")
+                st.session_state.context_top_k = 10
+                context = get_relevant_context(nl_query, st.session_state.model, st.session_state.index, st.session_state.df_schema, top_k=st.session_state.context_top_k)
+                sql_query = generate_sql_query(
+                    nl_query,
                     context,
                     st.session_state.composite_schema,
                     st.session_state.df_relationships,
-                    model_choice,
-                    chat_history=st.session_state.chat_history
+                    model_choice
                 )
-                st.error(f"SQL query could not be refined after {max_retries} attempts: {message}.")
-                st.info(clarifying_question)
-
+                valid, message = validate_columns(sql_query, st.session_state.table_columns)
+                if not valid:
+                    st.error(f"SQL query could not be refined: {message}")
+                else:
+                    st.session_state.sql_query = sql_query
+                    st.session_state.generated_context = context
+                    st.session_state.sql_generated = True
             else:
                 st.session_state.sql_query = sql_query
                 st.session_state.generated_context = context
                 st.session_state.sql_generated = True
-                # Add the initial generated query to chat history.
-                st.session_state.chat_history.append({"role": "system", "content": f"Generated query: {sql_query}"})
     
-    # Clarification input section (if previous generation was not successful or user wants to refine further)
-    clarification = st.text_input("Clarification (if needed):", key="clarification_input")
-    if st.button("Submit Clarification") and clarification.strip():
-        # Append user clarification to chat history
-        st.session_state.chat_history.append({"role": "user", "content": clarification})
-        # Use the clarification as additional context to refine the query
-        with st.spinner("Refining query based on clarification..."):
-            context = get_relevant_context(st.session_state.nl_query, st.session_state.model, st.session_state.index, st.session_state.df_schema, top_k=st.session_state.context_top_k)
-            refined_query = refine_sql_query(
-                st.session_state.sql_query,
-                "User clarification provided.",
-                context,
-                st.session_state.composite_schema,
-                st.session_state.df_relationships,
-                model_choice,
-                chat_history=st.session_state.chat_history
-            )
-            if refined_query:
-                st.session_state.sql_query = refined_query
-                st.session_state.sql_generated = True
-                st.session_state.chat_history.append({"role": "system", "content": f"Refined query: {refined_query}"})
-    
-    # Display generated query and execution interface if a query exists.
     if st.session_state.sql_generated:
         if st.session_state.explanation_mode:
             st.subheader("Query Context")
@@ -528,28 +436,6 @@ def main():
                     if not results.empty:
                         csv = results.to_csv(index=False)
                         st.download_button("Download Results (CSV)", csv, "query_results.csv", "text/csv", key="download_btn")
-                    # Ask user if query is correct
-                    correct = st.radio("Is this query correct?", ["Yes", "No"], key="correct_radio")
-                    if correct == "No":
-                        st.info("Please provide additional clarification below to further refine the query.")
-                        additional_clarification = st.text_input("Additional Clarification:", key="add_clarification")
-                        if st.button("Submit Additional Clarification"):
-                            st.session_state.chat_history.append({"role": "user", "content": additional_clarification})
-                            with st.spinner("Refining query based on additional clarification..."):
-                                context = get_relevant_context(st.session_state.nl_query, st.session_state.model, st.session_state.index, st.session_state.df_schema, top_k=st.session_state.context_top_k)
-                                refined_query = refine_sql_query(
-                                    st.session_state.sql_query,
-                                    "User indicated the query is incorrect.",
-                                    context,
-                                    st.session_state.composite_schema,
-                                    st.session_state.df_relationships,
-                                    model_choice,
-                                    chat_history=st.session_state.chat_history
-                                )
-                                if refined_query:
-                                    st.session_state.sql_query = refined_query
-                                    st.session_state.chat_history.append({"role": "system", "content": f"Refined query after additional clarification: {refined_query}"})
-                                    st.success("Query has been refined. Please execute again.")
-    
+
 if __name__ == "__main__":
     main()
